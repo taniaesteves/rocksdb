@@ -19,6 +19,56 @@
 
 namespace rocksdb {
 
+
+ReportTimeseriesPerformanceCounters Env::paio_performance_counter_general_ {};
+
+
+bool Env::RegisterPerformanceCountersGeneral (
+    const long& timestamp, const float& value, const float& latency_50p,
+    const float& latency_99p, const float& latency_999p,
+    const float& latency_9999p, const int& total_threads) {
+
+  std::unique_lock<std::mutex> unique_lock_t (paio_performance_counter_general_.report_lock_);
+  bool return_value_t = false;
+
+  paio_performance_counter_general_.throughput_aggregated_ += value;
+  paio_performance_counter_general_.latency_50th_ = std::max (latency_50p, paio_performance_counter_general_.latency_50th_);
+  paio_performance_counter_general_.latency_99th_ = std::max (latency_99p, paio_performance_counter_general_.latency_99th_);
+  paio_performance_counter_general_.latency_999th_ = std::max (latency_999p, paio_performance_counter_general_.latency_999th_);
+  paio_performance_counter_general_.latency_9999th_ = std::max (latency_9999p, paio_performance_counter_general_.latency_9999th_);
+
+  paio_performance_counter_general_.threads_++;
+
+  if (paio_performance_counter_general_.threads_ == total_threads) {
+    fprintf(stdout,
+            "TimeseriesPerformanceCounterGeneral: %ld %.3f %.3f %.3f %.3f %.3f\n",
+            timestamp,
+            paio_performance_counter_general_.throughput_aggregated_,
+            paio_performance_counter_general_.latency_50th_,
+            paio_performance_counter_general_.latency_99th_,
+            paio_performance_counter_general_.latency_999th_,
+            paio_performance_counter_general_.latency_9999th_);
+
+    paio_performance_counter_general_.throughput_aggregated_  = 0;
+    paio_performance_counter_general_.latency_50th_           = 0;
+    paio_performance_counter_general_.latency_99th_           = 0;
+    paio_performance_counter_general_.latency_999th_          = 0;
+    paio_performance_counter_general_.latency_9999th_         = 0;
+    paio_performance_counter_general_.threads_                = 0;
+
+    paio_performance_counter_general_.clean_hist_ = true;
+    return_value_t = true;
+  }
+
+  return return_value_t;
+}
+
+
+bool Env::IsTimeToCleanGeneral () {
+  std::unique_lock<std::mutex> unique_lock_t (paio_performance_counter_general_.report_lock_);
+  return paio_performance_counter_general_.clean_hist_;
+}
+
 Env::~Env() {
 }
 

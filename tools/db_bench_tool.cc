@@ -84,6 +84,7 @@ using GFLAGS_NAMESPACE::SetUsageMessage;
 
 DEFINE_string(
     benchmarks,
+    "ycsbwklda,"
     "fillseq,"
     "fillseqdeterministic,"
     "fillsync,"
@@ -1681,17 +1682,25 @@ class Stats {
 
         } else {
 
-          fprintf(stderr,
-                  "%s ... thread %d: (%" PRIu64 ",%" PRIu64 ") ops and "
-                  "(%.1f,%.1f) ops/second in (%.6f,%.6f) seconds\n",
-                  FLAGS_env->TimeToString(now/1000000).c_str(),
-                  id_,
-                  done_ - last_report_done_, done_,
-                  (done_ - last_report_done_) /
-                  (usecs_since_last / 1000000.0),
-                  done_ / ((now - start_) / 1000000.0),
-                  (now - last_report_finish_) / 1000000.0,
-                  (now - start_) / 1000000.0);
+          for (auto it = hist_.begin(); it != hist_.end(); ++it) {
+            auto return_value_t =
+              FLAGS_env->RegisterPerformanceCountersGeneral(
+                  (now / 1000000),
+//                        (done_ - last_report_done_) / (usecs_since_last / 1000000.0),
+                  (float)(1000000.0 / it->second->Average()),
+                  (float)it->second->Percentile(50),
+                  (float)it->second->Percentile(99),
+                  (float)it->second->Percentile(99.9),
+                  (float)it->second->Percentile(99.99),
+                  FLAGS_threads);
+
+            // This block will reset the histogram
+            // -- this way, DBbench will always report the latency percentiles of the stats_interval_ instance
+            // -- you should comment it if you want the accumulated latency percentile (i.e., cummulative latency percentiles)
+            if (FLAGS_env->IsTimeToCleanGeneral()) {
+              it->second->Clear();
+            }
+          }
 
           if (id_ == 0 && FLAGS_stats_per_interval) {
             std::string stats;
@@ -2634,6 +2643,8 @@ void VerifyDBFromDB(std::string& truth_db_name) {
         method = &Benchmark::DeleteSeq;
       } else if (name == "deleterandom") {
         method = &Benchmark::DeleteRandom;
+      } else if (name == "ycsbwklda") {
+	      method = &Benchmark::YCSBWorkloadA;
       } else if (name == "readwhilewriting") {
         num_threads++;  // Add extra thread for writing
         method = &Benchmark::ReadWhileWriting;
@@ -4664,6 +4675,71 @@ void VerifyDBFromDB(std::string& truth_db_name) {
 
   void DeleteRandom(ThreadState* thread) {
     DoDelete(thread, false);
+  }
+
+  // Workload A: Update heavy workload
+  // This workload has a mix of 50/50 reads and writes.
+  // An application example is a session store recording recent actions.
+  // Read/update ratio: 50/50
+  // Default data size: 1 KB records
+  // Request distribution: zipfian
+  void YCSBWorkloadA(ThreadState* thread) {
+    ReadOptions options(FLAGS_verify_checksum, true);
+    RandomGenerator gen;
+
+    std::string value;
+    int64_t found = 0;
+
+    int64_t reads_done = 0;
+    int64_t writes_done = 0;
+    Duration duration(FLAGS_duration, FLAGS_num);
+
+    std::unique_ptr<const char[]> key_guard;
+    Slice key = AllocateKey(&key_guard);
+
+    // the number of iterations is the larger of read_ or write_
+    while (!duration.Done(1)) {
+      DB* db = SelectDB(thread);
+
+          long k;
+          //Generate number from uniform distribution
+          k = thread->rand.Next() % FLAGS_num;
+
+          GenerateKeyFromInt(k, FLAGS_num, &key);
+
+          int next_op = thread->rand.Next() % 100;
+          if (next_op < 50){
+            //read
+            Status s = db->Get(options, key, &value);
+            if (!s.ok() && !s.IsNotFound()) {
+              //fprintf(stderr, "k=%d; get error: %s\n", k, s.ToString().c_str());
+              //exit(1);
+              // we continue after error rather than exiting so that we can
+              // find more errors if any
+            } else if (!s.IsNotFound()) {
+              found++;
+              thread->stats.FinishedOps(nullptr, db, 1, kRead);
+            }
+            reads_done++;
+
+          } else{
+
+            Status s = db->Put(write_options_, key, gen.Generate(value_size_));
+            if (!s.ok()) {
+              //fprintf(stderr, "put error: %s\n", s.ToString().c_str());
+              //exit(1);
+            } else{
+             writes_done++;
+             thread->stats.FinishedOps(nullptr, db, 1, kWrite);
+            }
+      }
+
+    }
+    char msg[100];
+    snprintf(msg, sizeof(msg), "( reads:%" PRIu64 " writes:%" PRIu64 \
+             " total:%" PRIu64 " found:%" PRIu64 ")",
+             reads_done, writes_done, readwrites_, found);
+    thread->stats.AddMessage(msg);
   }
 
   void ReadWhileWriting(ThreadState* thread) {

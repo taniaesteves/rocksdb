@@ -23,6 +23,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <mutex>
 #include "rocksdb/status.h"
 #include "rocksdb/thread_status.h"
 
@@ -109,6 +110,18 @@ struct EnvOptions {
   RateLimiter* rate_limiter = nullptr;
 };
 
+struct ReportTimeseriesPerformanceCounters {
+  std::mutex  report_lock_;
+  float       throughput_aggregated_;
+  float       latency_50th_;
+  float       latency_99th_;
+  float       latency_999th_;
+  float       latency_9999th_;
+  int         threads_;
+  int         clean_histogram_[8];
+  bool        clean_hist_;
+};
+
 class Env {
  public:
   struct FileAttributes {
@@ -118,6 +131,16 @@ class Env {
     // Size of file in bytes
     uint64_t size_bytes;
   };
+
+static ReportTimeseriesPerformanceCounters paio_performance_counter_general_;
+
+  static bool RegisterPerformanceCountersGeneral (
+      const long& timestamp, const float& value, const float& latency_50p,
+      const float& latency_99p, const float& latency_999p,
+      const float& latency_9999p, const int& total_threads);
+
+  static bool IsTimeToCleanGeneral ();
+
 
   Env() : thread_status_updater_(nullptr) {}
 
